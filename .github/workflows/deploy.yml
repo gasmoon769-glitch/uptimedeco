@@ -105,38 +105,17 @@ jobs:
           # 1. 確保 Pages 專案一定存在
           npx wrangler pages project create uptimeflare --production-branch main || echo "Project might already exist"
           
-          # 2. 自動讀取 GitHub 專案中的 worker/wrangler-dev.toml，解析出裡面的 binding 名稱
+          # 2. 自動讀取 GitHub 專案中的 worker/wrangler-dev.toml，解析出 binding 名稱 (會得到 UPTIMEFLARE_STATE)
           KV_BINDING_NAME=$(grep "kv_namespaces" worker/wrangler-dev.toml | sed -E 's/.*binding = "([^"]+)".*/\1/')
           echo "從 GitHub 檔案中成功讀取到 KV 空間名稱: $KV_BINDING_NAME"
           
-          # 3. 嘗試從 Cloudflare 查詢該空間的真實 32 位元 ID
-          echo "正在從 Cloudflare 查詢該空間的真實 32 位元 ID..."
-          KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "Content-Type: application/json" | jq -r --arg name "$KV_BINDING_NAME" '.result[]? | select(.title | contains($name)) | .id')
+          # 3. 【關鍵修正】手動填入您在第一步複製的 Cloudflare 32位元真實 KV ID
+          # 請將引號內的文字換成例如 "c354c627d1cb..." 這種格式的真實 ID
+          REAL_KV_ID="把你的_32位元_真實KV_ID_貼在這裡"
           
-          # 4. 如果查不到 (可能因為沒建立或 Token 權限問題)，就直接透過 API 當場在 Cloudflare 新建一個 KV 空間！
-          if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
-            echo "⚠️ 在 Cloudflare 帳戶中未偵測到該 KV 空間。正在嘗試直接為您新建一個名為 $KV_BINDING_NAME 的 KV 空間..."
-            
-            CREATE_RES=$(curl -s -X POST "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
-              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              -H "Content-Type: application/json" \
-              --data "{\"title\": \"$KV_BINDING_NAME\"}")
-            
-            KV_ID=$(echo "$CREATE_RES" | jq -r '.result.id')
-            
-            if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
-              echo "❌ 錯誤：無法自動建立 KV 空間。請檢查您的 CLOUDFLARE_API_TOKEN 是否擁有 [Workers KV: Edit] 權限！"
-              exit 1
-            fi
-            echo "🎉 成功在 Cloudflare 後台新建 KV 空間！取得新 ID 為: $KV_ID"
-          else
-            echo "成功匹配雲端已有空間！真實 KV ID 為: $KV_ID"
-          fi
+          echo "開始將正確的 32位元 ID ($REAL_KV_ID) 同步至 Pages 後台..."
           
-          # 5. 使用 Cloudflare 官方 REST API，強行注入 Pages 的相容性與 KV 繫結設定
-          echo "開始將動態設定與 KV 繫結同步至 Pages 後台..."
+          # 4. 使用 Cloudflare 官方 REST API，強行注入正確的配置
           curl --request PATCH \
             --url "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/uptimeflare" \
             --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
@@ -147,26 +126,26 @@ jobs:
                   \"compatibility_date\": \"2023-11-08\",
                   \"compatibility_flags\": [\"nodejs_compat\"],
                   \"kv_namespaces\": {
-                    \"$KV_BINDING_NAME\": { \"namespace_id\": \"$KV_ID\" }
+                    \"$KV_BINDING_NAME\": { \"namespace_id\": \"$REAL_KV_ID\" }
                   }
                 },
                 \"preview\": {
                   \"compatibility_date\": \"2023-11-08\",
                   \"compatibility_flags\": [\"nodejs_compat\"],
                   \"kv_namespaces\": {
-                    \"$KV_BINDING_NAME\": { \"namespace_id\": \"$KV_ID\" }
+                    \"$KV_BINDING_NAME\": { \"namespace_id\": \"$REAL_KV_ID\" }
                   }
                 }
               }
             }"
           
-          # 6. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署
+          # 5. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署
           if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
           
-          # 7. 執行標準部署（單純上傳靜態檔案）
+          # 6. 執行標準部署（單純上傳靜態檔案）
           npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
           
-          # 8. 部署完成後將設定檔還原
+          # 7. 部署完成後將設定檔還原
           if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
