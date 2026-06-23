@@ -79,31 +79,34 @@ jobs:
         run: |
           npx @cloudflare/next-on-pages
 
-      - name: Deploy using Terraform
-        # We're using terraform for first-time setup here,
-        # since we didn't setup a remote backend to store state,
-        # following runs will fail with name conflict, which is normal.
-        continue-on-error: true
+ # 1. 既然 Terraform 健忘又殘缺，我們只用它初始化，完全不讓它執行 apply
+      - name: Terraform Init Only
+        run: terraform init
 
+      # 2. 用官方工具強制上傳 Pages（前端）
+      - name: Force Upload Pages
         run: |
-          terraform init
-          terraform apply -auto-approve -input=false
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          TF_VAR_CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
-
-      # Still need to upload worker to keep it up-to-date (Terraform will fail after first-time setup)
-      - name: Upload worker
-        run: |
-          curl --fail-with-body -X PUT https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/uptimeflare_worker/content --header 'Authorization: Bearer '$CLOUDFLARE_API_TOKEN -F 'index.js=@worker/dist/index.js;type=application/javascript+module' -F 'metadata={"main_module": "index.js"}'
+          # 建立 Pages 專案
+          npx wrangler pages project create uptimeflare --production-branch main || echo "Already exists"
+          
+          # 將寫有相容性設定的 toml 複製到根目錄，逼 Wrangler 讀取
+          cp worker/wrangler.toml ./wrangler.toml
+          
+          # 強制上傳前端靜態檔案
+          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
+          
+          # 刪除暫存
+          rm -f ./wrangler.toml
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
 
-      # Currently Terraform Cloudflare provider doesn't support direct upload, use wrangler to upload instead.
-      - name: Upload pages
+      # 3. 既然 deploy.tf 漏寫了 Worker，我們直接進子目錄，用 Wrangler 獨立把監控後端強行注入！
+      - name: Force Deploy Worker (Fallback 心臟補齊)
         run: |
-          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
+          cd worker
+          # 強制以 uptimeflare_worker 的名字部署這套監控後端
+          npx wrangler deploy --name uptimeflare_worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
