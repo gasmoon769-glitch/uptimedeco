@@ -18,7 +18,7 @@ const workerConfig = {
   // Define all your monitors here
   monitors: [
 
-    // Example TCP Monitor
+    // Example TCP Monitor //
     {
       id: 'decotv',
       name: 'decotv',
