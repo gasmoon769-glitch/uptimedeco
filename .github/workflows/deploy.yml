@@ -107,8 +107,8 @@ jobs:
           # 2. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署而跳出 Missing entry-point 錯誤
           if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
           
-          # 3. 強制使用 --no-config 進行純靜態 Pages 部署
-          #npx wrangler pages deploy .vercel/output/static --project-name uptimeflare --no-config
+          # 3.  Pages 部署
+          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
           
           # 4. 部署完成後將設定檔還原
           if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
