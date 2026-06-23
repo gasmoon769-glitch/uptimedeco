@@ -105,13 +105,18 @@ jobs:
           # 1. 確保 Pages 專案一定存在
           npx wrangler pages project create uptimeflare --production-branch main || echo "Project might already exist"
           
-          # 2. 動態在 wrangler.toml 尾端追加 Pages 部署所需的設定區塊與相容性旗標
-          #    這可以修正因前面 Terraform 失敗導致的旗標遺失問題
-          echo -e "\n[pages]\nproject_name = \"uptimeflare\"\ncompatibility_flags = [ \"nodejs_compat\" ]" >> wrangler.toml
+          # 2. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署而跳出 Missing entry-point 錯誤
+          if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
           
-          # 3. 正常執行部署，直接讓 wrangler 讀取包含新旗標的設定檔
-          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
+          # 3. 部署時直接在指令加上相容性旗標參數（如此即可不用 --no-config，但能強制將旗標推送到雲端）
+          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare --compatibility-flags nodejs_compat
+          
+          # 4. 部署完成後將設定檔還原
+          if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+
+
 
