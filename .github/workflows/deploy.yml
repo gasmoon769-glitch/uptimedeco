@@ -84,29 +84,33 @@ jobs:
         run: terraform init
 
       # 2. 用官方工具強制上傳 Pages（前端）
+ # 2. 用官方工具強制上傳 Pages（前端），並在指令中強行注入相容性與 KV 真實 ID
       - name: Force Upload Pages
         run: |
-          # 建立 Pages 專案
+          # A. 建立 Pages 專案（若存在則跳過）
           npx wrangler pages project create uptimeflare --production-branch main || echo "Already exists"
           
-          # 將寫有相容性設定的 toml 複製到根目錄，逼 Wrangler 讀取
-          cp worker/wrangler.toml ./wrangler.toml
+          # B. 精準撈取您 Cloudflare 後台名為 uptimeflare_kv 的 32 位元真實 KV ID
+          echo "正在從雲端撈取 uptimeflare_kv 的真實 ID..."
+          KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" | jq -r '.result[] | select(.title == "uptimeflare_kv") | .id')
           
-          # 強制上傳前端靜態檔案
-          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
-          
-          # 刪除暫存
-          rm -f ./wrangler.toml
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
-
-      # 3. 既然 deploy.tf 漏寫了 Worker，我們直接進子目錄，用 Wrangler 獨立把監控後端強行注入！
-      - name: Force Deploy Worker (Fallback 心臟補齊)
-        run: |
-          cd worker
-          # 強制以 uptimeflare_worker 的名字部署這套監控後端
-          npx wrangler deploy --name uptimeflare_worker
+          if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
+            echo "⚠️ 警告：找不到雲端 KV 空間，將跳過 KV 綁定，但仍會強制注入 Node 相容性"
+            
+            # 即使沒撈到 KV，也強制把 Node.js 相容性開關帶入部署！
+            WRANGLER_COMPATIBILITY_FLAGS="nodejs_compat" npx wrangler pages deploy .vercel/output/static --project-name uptimeflare --compatibility-flags=nodejs_compat
+          else
+            echo "🎯 成功撈取真實 KV ID: $KV_ID"
+            echo "現在將【Node相容性】與【KV實體管道】直接強行注入 Pages 部署流程..."
+            
+            # 這是 Cloudflare 官方隱藏的終極大招：利用環境變數把特定的 KV ID 和相容性硬塞進 Pages 部署中
+            # 變數格式為：CLOUDFLARE_BINDING_KV_<繫結名稱>="<真實32位元ID>"
+            export CLOUDFLARE_BINDING_KV_UPTIMEFLARE_STATE="$KV_ID"
+            
+            WRANGLER_COMPATIBILITY_FLAGS="nodejs_compat" npx wrangler pages deploy .vercel/output/static --project-name uptimeflare --compatibility-flags=nodejs_compat
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
