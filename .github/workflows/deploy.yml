@@ -85,40 +85,48 @@ jobs:
           terraform init
           
           # 1. 取得本次動態專案名稱（例如 uptimeflare-15）
-          # 使用 ${{ github.run_number }} 確保每一次 PUSH 觸發時，名字絕對不同！
           DYNAMIC_NAME="uptimeflare-${{ github.run_number }}"
           echo "本次部屬將使用全新的獨立專案名稱: $DYNAMIC_NAME"
           
-          # 2. 自動清理上一版的殘留專案（防止後台累積太多不同名的專案爆額度）
+          # 2. 自動清理上一版的殘留 Pages 專案（防止爆額度）
           LAST_RUN=$(( ${{ github.run_number }} - 1 ))
           echo "正在自動清理上一版的殘留專案 uptimeflare-$LAST_RUN ..."
           npx wrangler pages project delete "uptimeflare-$LAST_RUN" --yes || echo "No previous pages project to delete"
           
           # 3. 執行 Terraform 套用
-          # 透過 -var 將新名字傳給 Terraform，讓它每一次都判定為「首次部署」
           terraform apply -auto-approve -input=false -var="project_name=$DYNAMIC_NAME"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
 
-      # 目前 Terraform Cloudflare provider 不支援直接上傳，改用 wrangler 上傳。
- # 目前 Terraform Cloudflare provider 不支援直接上傳，改用 wrangler 上傳。
+      # 目前 Terraform Cloudflare provider 不支援直接上傳，改用 wrangler 上傳 Pages。
       - name: Upload pages
         run: |
-          # 1. 重新宣告與上方一致的動態專案名稱（每次都是新專案）
           DYNAMIC_NAME="uptimeflare-${{ github.run_number }}"
           
-          # 2. 確保該動態名稱的 Pages 專案在雲端建立
+          # 1. 確保該動態名稱的 Pages 專案在雲端建立
           npx wrangler pages project create "$DYNAMIC_NAME" --production-branch main || echo "Project already exists"
           
-          # 3. 暫時將根目錄的 wrangler.toml 改名（防干擾，如果有的話）
-          if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
+          # 2. 把 worker 目錄下的 toml 複製到最外層根目錄，讓 Pages 抓到相容性設定
+          cp worker/wrangler.toml ./wrangler.toml
           
-          # 4. 【核心修正】加上 --config 指向子目錄檔案，並用環境變數雙重保險打開 Node 相容性！
-          WRANGLER_COMPATIBILITY_FLAGS="nodejs_compat" WRANGLER_COMPATIBILITY_DATE="2023-11-08" npx wrangler pages deploy .vercel/output/static --project-name "$DYNAMIC_NAME" --config worker/wrangler.toml
+          # 3. 執行標準 Pages 部署
+          npx wrangler pages deploy .vercel/output/static --project-name "$DYNAMIC_NAME"
           
-          # 5. 部署完成後將設定檔還原
-          if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
+          # 4. 部署完成後把剛才複製的暫存檔案刪除
+          rm -f ./wrangler.toml
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+      # 【核心新增】：既然 Terraform 沒產生 worker，我們用 wrangler 強制把 worker 補上去！
+      - name: Upload Worker (Fallback 保險步驟)
+        run: |
+          echo "正在進入 worker 子目錄，強制上傳缺失的監控後端 Worker..."
+          cd worker
+          
+          # 使用 wrangler 直接部署 Worker，並強行指定名稱為 uptimeflare_worker
+          npx wrangler deploy --name uptimeflare_worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
