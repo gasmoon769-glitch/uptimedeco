@@ -78,36 +78,72 @@ jobs:
         run: |
           npx @cloudflare/next-on-pages
 
-      - name: Deploy using Terraform
-        # 允許它即使有警告也能繼續，但我們會透過正確的格式讓它 100% 導入成功
+- name: Deploy using Terraform
+        # 允許失敗繼續，確保流程順暢
         continue-on-error: true
         run: |
           terraform init
           
-          # 1. 獲取 Account ID 變數
-          ACCOUNT_ID="${{ steps.fetch_account_id.outputs.account_id }}"
+          # 1. 取得本次動態專案名稱（例如 uptimeflare-15）
+          # 使用 ${{ github.run_number }} 確保每一次 PUSH 觸發時，名字絕對不同！
+          DYNAMIC_NAME="uptimeflare-${{ github.run_number }}"
+          echo "本次部屬將使用全新的獨立專案名稱: $DYNAMIC_NAME"
           
-          echo "正在將已存在的 Cloudflare 資源強制導入（Import）至 Terraform 狀態中..."
+          # 2. 如果有上一版的舊專案存在，先透過 CLI 快速背景刪除（釋放 Cloudflare 免費額度限制）
+          LAST_RUN=$(( ${{ github.run_number }} - 1 ))
+          echo "正在自動清理上一版的殘留專案 uptimeflare-$LAST_RUN ..."
+          npx wrangler pages project delete "uptimeflare-$LAST_RUN" --yes || echo "No previous pages project to delete"
           
-          # 2. 依照日誌規定的正確格式 "accountID/project-name" 導入 Pages
-          terraform import cloudflare_pages_project.uptimeflare "$ACCOUNT_ID/uptimeflare" || echo "Pages already imported"
-          
-          # 3. 根據日誌修正的正確 Resource 名稱與 "accountID/namespaceID" 格式外掛
-          # 先行查詢真實的 KV ID 進行精準導入
-          KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/storage/kv/namespaces" \
-            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
-            -H "Content-Type: application/json" | jq -r '.result[] | select(.title == "uptimeflare_kv") | .id')
-          
-          if [[ -n "$KV_ID" && "$KV_ID" != "null" ]]; then
-            terraform import cloudflare_workers_kv_namespace.uptimeflare_kv "$ACCOUNT_ID/$KV_ID" || echo "KV already imported"
-          fi
-          
-          # 4. 執行套用（此時就不會再噴出 10014 已存在的錯誤，會直接成功更新！）
-          terraform apply -auto-approve -input=false
+          # 3. 執行 Terraform 套用
+          # 透過 -var 將新名字傳給 Terraform，讓它每一次都判定為「首次部署」
+          terraform apply -auto-approve -input=false -var="project_name=$DYNAMIC_NAME"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TF_VAR_CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
-      - name: Upload worker
+
+      # 目前 Terraform Cloudflare provider 不支援直接上傳，改用 wrangler 上傳。
+      - name: Upload pages
+        run: |
+          # 1. 重新宣告與上方一致的動態專案名稱
+          DYNAMIC_NAME="uptimeflare-${{ github.run_number }}"
+          
+          # 2. 確保該動態名稱的 Pages 專案在雲端建立（因為是新名字，這步 100% 成功）
+          npx wrangler pages project create "$DYNAMIC_NAME" --production-branch main || echo "Project already exists"
+          
+          # 3. 自動從 Cloudflare 後台動態撈取專案對應的真實 32 位元 KV ID
+          KV_BINDING_NAME=$(grep "kv_namespaces" worker/wrangler-dev.toml | sed -E 's/.*binding = "([^"]+)".*/\1/')
+          KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" | jq -r '.result[] | select(.title == "uptimeflare_kv") | .id')
+          
+          # 4. 用官方 API 強行把正確的相容性與 KV 繫結寫入這個全新的動態專案中
+          curl --request PATCH \
+            --url "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/$DYNAMIC_NAME" \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            --header "Content-Type: application/json" \
+            --data "{
+              \"deployment_configs\": {
+                \"production\": {
+                  \"compatibility_date\": \"2023-11-08\",
+                  \"compatibility_flags\": [\"nodejs_compat\"],
+                  \"kv_namespaces\": {
+                    \"$KV_BINDING_NAME\": { \"namespace_id\": \"$KV_ID\" }
+                  }
+                }
+              }
+            }"
+          
+          # 5. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署
+          if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
+          
+          # 6. 執行標準部署（將網頁檔案精準推送到這個新名字的專案中）
+          npx wrangler pages deploy .vercel/output/static --project-name "$DYNAMIC_NAME"
+          
+          # 7. 部署完成後將設定檔還原
+          if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}      - name: Upload worker
         run: |
           curl --fail-with-body -X PUT https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/uptimeflare_worker/content --header 'Authorization: Bearer '$CLOUDFLARE_API_TOKEN -F 'index.js=@worker/dist/index.js;type=application/javascript+module' -F 'metadata={"main_module": "index.js"}'
         env:
