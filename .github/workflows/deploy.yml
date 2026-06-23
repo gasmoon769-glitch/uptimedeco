@@ -105,18 +105,18 @@ jobs:
           # 1. 確保 Pages 專案一定存在
           npx wrangler pages project create uptimeflare --production-branch main || echo "Project might already exist"
           
-          # 2. 先透過 API 查詢名為 UPTIMEFLARE_STATE 的 KV 命名空間 ID
-          echo "正在查詢 KV 命名空間 ID..."
+          # 2. 自動查詢名為 UPTIMEFLARE_STATE 的 KV 命名空間 ID
+          echo "正在從 Cloudflare 查詢 UPTIMEFLARE_STATE 的真實 KV ID..."
           KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
             -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
             -H "Content-Type: application/json" | jq -r '.result[] | select(.title | contains("UPTIMEFLARE_STATE")) | .id')
           
           if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
-            echo "⚠️ 找不到包含 UPTIMEFLARE_STATE 的 KV 命名空間，請確認已在 Cloudflare 建立 KV！"
+            echo "⚠️ 找不到包含 UPTIMEFLARE_STATE 的 KV 空間，請確認您 Cloudflare 後台已有建立該 KV！"
           else
-            echo "找到 KV ID: $KV_ID，正在同步至 Pages 後台（包含相容性設定與 KV 繫結）..."
+            echo "成功找到 KV ID: $KV_ID，開始強制將相容性設定與 KV 繫結同步至 Pages 後台..."
             
-            # 3. 使用官方 REST API 同步：相容性日期 + 相容性旗標 + KV 命名空間綁定
+            # 3. 使用 Cloudflare 官方 API 同步：相容性日期 + 相容性旗標 + KV 命名空間綁定
             curl --request PATCH \
               --url "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/uptimeflare" \
               --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
