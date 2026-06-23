@@ -38,6 +38,7 @@ jobs:
             fi
           fi
           echo 'account_id='$ACCOUNT_ID >> $GITHUB_OUTPUT
+
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       
@@ -53,7 +54,7 @@ jobs:
                --url https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/dummy-ib4db6ntj5csdef3 \
                --header 'Authorization: Bearer '$CLOUDFLARE_API_TOKEN \
                --header 'Content-Type: application/javascript' \
-               --data 'addEventListener('\''fetch'\'', (event) => event.respondWith(new Response('\''OK'\'')))'
+               --data 'addEventListener('\''fetch'\'', (event) => event.respondWith(new Response('\''OK'\'')))'\
           
           curl --request DELETE --fail-with-body \
                --url https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/dummy-ib4db6ntj5csdef3 \
@@ -83,6 +84,7 @@ jobs:
         # since we didn't setup a remote backend to store state,
         # following runs will fail with name conflict, which is normal.
         continue-on-error: true
+
         run: |
           terraform init
           terraform apply -auto-approve -input=false
@@ -101,17 +103,7 @@ jobs:
       # Currently Terraform Cloudflare provider doesn't support direct upload, use wrangler to upload instead.
       - name: Upload pages
         run: |
-          # 1. 確保 Pages 專案一定存在（防止前面 Terraform 執行失敗或被跳過）
-          npx wrangler pages project create uptimeflare --production-branch main || echo "Project might already exist"
-          
-          # 2. 暫時將 wrangler.toml 改名，防止 wrangler 誤判此步驟為 Worker 部署而跳出 Missing entry-point 錯誤
-          if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
-          
-          # 3. 強制使用 --no-config 進行純靜態 Pages 部署
-          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare --no-config
-          
-          # 4. 部署完成後將設定檔還原
-          if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
+          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
