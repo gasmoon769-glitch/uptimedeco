@@ -79,71 +79,31 @@ jobs:
         run: |
           npx @cloudflare/next-on-pages
 
- # 1. 既然 Terraform 健忘又殘缺，我們只用它初始化，完全不讓它執行 apply
- # 1. 初始化 Terraform，但我們完全不管它的 apply 報錯
-      - name: Terraform Init
-        run: terraform init
+      - name: Deploy using Terraform
+        # We're using terraform for first-time setup here,
+        # since we didn't setup a remote backend to store state,
+        # following runs will fail with name conflict, which is normal.
+        continue-on-error: true
 
-      # 2. 強制部署 Pages，並直接透過雲端 API 強灌相容性與 KV 綁定
-      - name: Force Fix and Deploy Pages
         run: |
-          # A. 確保專案存在
-          npx wrangler pages project create uptimeflare --production-branch main || echo "Already exists"
-          
-          # B. 透過官方 API 精準撈取您後台 uptimeflare_kv 的 32 位元真實 ID
-          echo "正在從雲端獲取實體 KV ID..."
-          KV_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/storage/kv/namespaces" \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -H "Content-Type: application/json" | jq -r '.result[] | select(.title == "uptimeflare_kv") | .id')
-          
-          if [ -z "$KV_ID" ] || [ "$KV_ID" = "null" ]; then
-            echo "⚠️ 警告：找不到名為 uptimeflare_kv 的 KV 空間，請確認後台名稱是否正確！"
-          else
-            echo "🎯 成功取得實體 KV ID: $KV_ID"
-            echo "正在透過 Cloudflare 官方最高權限 API 強行注入配置..."
-            
-            # 直接繞過 Wrangler 檔案讀取，直擊 Cloudflare 最底層資料庫，把「相容性」與「KV」綁死
-            curl --request PATCH \
-              --url "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/uptimeflare" \
-              --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-              --header "Content-Type: application/json" \
-              --data "{
-                \"deployment_configs\": {
-                  \"production\": {
-                    \"compatibility_date\": \"2023-11-08\",
-                    \"compatibility_flags\": [\"nodejs_compat\"],
-                    \"kv_namespaces\": {
-                      \"UPTIMEFLARE_STATE\": { \"namespace_id\": \"$KV_ID\" }
-                    }
-                  }
-                }
-              }"
-          fi
-          
-          # C. 暫時將可能干擾的 wrangler.toml 改名
-          if [ -f "wrangler.toml" ]; then mv wrangler.toml wrangler.toml.bak; fi
-          if [ -f "worker/wrangler.toml" ]; then mv worker/wrangler.toml worker/wrangler.toml.bak; fi
-          
-          # D. 純粹、乾淨地上傳靜態網頁檔案
-          echo "正在上傳前端網頁檔案..."
-          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
-          
-          # E. 部署完後將檔案還原
-          if [ -f "wrangler.toml.bak" ]; then mv wrangler.toml.bak wrangler.toml; fi
-          if [ -f "worker/wrangler.toml.bak" ]; then mv worker/wrangler.toml.bak worker/wrangler.toml; fi
+          terraform init
+          terraform apply -auto-approve -input=false
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
+
+      # Still need to upload worker to keep it up-to-date (Terraform will fail after first-time setup)
+      - name: Upload worker
+        run: |
+          curl --fail-with-body -X PUT https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/uptimeflare_worker/content --header 'Authorization: Bearer '$CLOUDFLARE_API_TOKEN -F 'index.js=@worker/dist/index.js;type=application/javascript+module' -F 'metadata={"main_module": "index.js"}'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
 
-      # 3. 獨立更新後端的 Worker，這步跟前端完全隔離，絕不撞車
-      - name: Force Sync Worker Backend
+      # Currently Terraform Cloudflare provider doesn't support direct upload, use wrangler to upload instead.
+      - name: Upload pages
         run: |
-          # 還原剛才改名的 toml 檔以利 Worker 讀取
-          if [ -f "worker/wrangler.toml.bak" ]; then mv worker/wrangler.toml.bak worker/wrangler.toml; fi
-          
-          echo "正在單獨同步後端 Worker 監控程式碼..."
-          cd worker
-          npx wrangler deploy --name uptimeflare_worker
+          npx wrangler pages deploy .vercel/output/static --project-name uptimeflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ steps.fetch_account_id.outputs.account_id }}
